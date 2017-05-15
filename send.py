@@ -7,6 +7,11 @@ DATA_CHUNK_SIZE = 1024
 
 # Sample usage: send.py <wav file> <target IP> <port>
 
+target_ip = sys.argv[2]
+target_port = int(sys.argv[3])
+
+print "Target: {0}:{1}".format(target_ip, target_port)
+
 def read_uint16(file):
   return struct.unpack("<H", file.read(2))[0]
 
@@ -75,12 +80,14 @@ with open(sys.argv[1], "rb") as f:
         
         data.extend(chunk)
         
-        print binascii.hexlify(data)
+        #print binascii.hexlify(data)
         
         print "Sending packet {0}".format(sequence_number)
         
-        s.sendto(data, (sys.argv[2], int(sys.argv[3])))
+        r = s.sendto(data, (target_ip, target_port))
         
+        print r
+                
         sequence_number += 1
         remaining_data -= size_to_read
       

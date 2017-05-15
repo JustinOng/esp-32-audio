@@ -124,13 +124,14 @@ static void listen_audio_data(void *pvParameters)
 	struct sockaddr_in serverAddress;
 
 	// Create a socket that we will listen upon.
-	int sock = socket(AF_INET, SOCK_DGRAM , IPPROTO_UDP );
+	int sock = socket(AF_INET, SOCK_DGRAM , 0);
 	if (sock < 0) {
 		ESP_LOGE(TAG, "socket: %d %s", sock, strerror(errno));
 		goto END;
 	}
 
 	// Bind our server socket to a port.
+  memset(&serverAddress, 0, sizeof(serverAddress));
 	serverAddress.sin_family = AF_INET;
 	serverAddress.sin_addr.s_addr = htonl(INADDR_ANY);
 	serverAddress.sin_port = htons(PORT_NUMBER);
@@ -152,7 +153,9 @@ static void listen_audio_data(void *pvParameters)
 
     struct sockaddr_storage src_addr;
     socklen_t src_addr_len = sizeof(src_addr);
+    ESP_LOGI(TAG, "Waiting...");
     ssize_t count = recvfrom(sock,buffer,sizeof(buffer),0,(struct sockaddr*)&src_addr,&src_addr_len);
+    ESP_LOGI(TAG, "Ping!");
     if (count == -1) {
       ESP_LOGE(TAG, "recvfrom: %s",strerror(errno));
       goto END;
