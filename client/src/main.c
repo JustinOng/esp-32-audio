@@ -13,14 +13,14 @@
 #include "timer.h"
 #include <lwip/sockets.h>
 
-#define PORT_NUMBER 8080
-
 // for audio isr
 #define TIMER_DIVIDER 1
 #define TRK_TIMER_GROUP	TIMER_GROUP_0
 #define TRK_TIMER_IDX	TIMER_1
 // technically is 1814.05, what do i do with the .05? track and increment when it exceeds 1 count?
 #define AUDIO_ISR_INTERVAL 1814
+
+#define PORT_NUMBER 8001
 
 EventGroupHandle_t wifi_event_group;
 
@@ -81,6 +81,7 @@ static void initialise_wifi(void)
   IP4_ADDR(&ipInfo.ip, 192,168,1,1);
   IP4_ADDR(&ipInfo.gw, 192,168,1,1);
   IP4_ADDR(&ipInfo.netmask, 255,255,255,0);
+
   ESP_ERROR_CHECK(tcpip_adapter_dhcps_stop(TCPIP_ADAPTER_IF_AP));
   ESP_ERROR_CHECK(tcpip_adapter_set_ip_info(TCPIP_ADAPTER_IF_AP, &ipInfo));
   ESP_ERROR_CHECK(tcpip_adapter_dhcps_start(TCPIP_ADAPTER_IF_AP));
@@ -119,42 +120,50 @@ static void initialise_audio_isr(void) {
 
 static void listen_audio_data(void *pvParameters)
 {
-  // https://github.com/nkolban/esp32-snippets/blob/master/sockets/server/socket_server.c
   struct sockaddr_in clientAddress;
-  struct sockaddr_in serverAddress;
+	struct sockaddr_in serverAddress;
 
-  // http://www.microhowto.info/howto/listen_for_and_receive_udp_datagrams_in_c.html
-  // Create a socket that we will listen upon.
-  // AF_INET: ipv4
-  // SOCK_DGRAM & IPPROTO_UDP: self explanatory
-  // use SOCK_STREAM, IPPROTO_TCP for tcp
-  int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-  if (sock < 0) {
-    ESP_LOGE(TAG, "socket: %d %s", sock, strerror(errno));
-    return;
-  }
+	// Create a socket that we will listen upon.
+	int sock = socket(AF_INET, SOCK_DGRAM , IPPROTO_UDP );
+	if (sock < 0) {
+		ESP_LOGE(TAG, "socket: %d %s", sock, strerror(errno));
+		goto END;
+	}
 
-  // Bind our server socket to a port.
-  serverAddress.sin_family = AF_INET;
-  serverAddress.sin_addr.s_addr = htonl(INADDR_ANY);
-  serverAddress.sin_port = htons(PORT_NUMBER);
-  int rc  = bind(sock, (struct sockaddr *)&serverAddress, sizeof(serverAddress));
-  if (rc < 0) {
-    ESP_LOGE(TAG, "bind: %d %s", rc, strerror(errno));
-    return;
-  }
+	// Bind our server socket to a port.
+	serverAddress.sin_family = AF_INET;
+	serverAddress.sin_addr.s_addr = htonl(INADDR_ANY);
+	serverAddress.sin_port = htons(PORT_NUMBER);
+	int rc  = bind(sock, (struct sockaddr *)&serverAddress, sizeof(serverAddress));
+	if (rc < 0) {
+		ESP_LOGE(TAG, "bind: %d %s", rc, strerror(errno));
+		goto END;
+	}
+  /*
+	// Flag the socket as listening for new connections.
+	rc = listen(sock, 5);
+	if (rc < 0) {
+		ESP_LOGE(TAG, "listen: %d %s", rc, strerror(errno));
+		goto END;
+	}*/
 
-  // Flag the socket as listening for new connections.
-  rc = listen(sock, 5);
-  if (rc < 0) {
-    ESP_LOGE(TAG, "listen: %d %s", rc, strerror(errno));
-    return;
-  }
+	while (1) {
+		char *buffer = malloc(1032);
 
-  while (1) {
+    struct sockaddr_storage src_addr;
+    socklen_t src_addr_len = sizeof(src_addr);
+    ssize_t count = recvfrom(sock,buffer,sizeof(buffer),0,(struct sockaddr*)&src_addr,&src_addr_len);
+    if (count == -1) {
+      ESP_LOGE(TAG, "recvfrom: %s",strerror(errno));
+      goto END;
+    }
 
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
-  }
+		// http://stackoverflow.com/a/8170756
+		ESP_LOGD(TAG, "Data read (size: %d) was: %.*s", count, count, buffer);
+		free(buffer);
+	}
+	END:
+	vTaskDelete(NULL);
 }
 
 void app_main()
