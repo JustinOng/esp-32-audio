@@ -10,9 +10,12 @@
 #include "esp_system.h"
 #include "nvs_flash.h"
 #include "tcpip_adapter.h"
+#include <lwip/sockets.h>
 
 #define AP_SSID "ESP32 Test"
 #define AP_PASSWORD "network password"
+
+#define PORT_NUMBER 8001
 
 EventGroupHandle_t wifi_event_group;
 
@@ -69,31 +72,62 @@ static void initialise_wifi(void)
   IP4_ADDR(&ipInfo.ip, 192,168,1,1);
   IP4_ADDR(&ipInfo.gw, 192,168,1,1);
   IP4_ADDR(&ipInfo.netmask, 255,255,255,0);
+  tcpip_adapter_dhcps_stop(TCPIP_ADAPTER_IF_AP);
   tcpip_adapter_set_ip_info(TCPIP_ADAPTER_IF_AP, &ipInfo);
+  tcpip_adapter_dhcps_start(TCPIP_ADAPTER_IF_AP);
 }
 
-static void wpa2_enterprise_example_task(void *pvParameters)
+static void listen_udp(void *pvParameters)
 {
-  tcpip_adapter_ip_info_t ip;
-  memset(&ip, 0, sizeof(tcpip_adapter_ip_info_t));
-  vTaskDelay(2000 / portTICK_PERIOD_MS);
+  struct sockaddr_in clientAddress;
+	struct sockaddr_in serverAddress;
 
-  while (1) {
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
+	// Create a socket that we will listen upon.
+	int sock = socket(AF_INET, SOCK_DGRAM , IPPROTO_UDP );
+	if (sock < 0) {
+		ESP_LOGE(TAG, "socket: %d %s", sock, strerror(errno));
+		goto END;
+	}
 
-    if (tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_AP , &ip) == 0) {
-      ESP_LOGI(TAG, "~~~~~~~~~~~");
-      ESP_LOGI(TAG, "IP:"IPSTR, IP2STR(&ip.ip));
-      ESP_LOGI(TAG, "MASK:"IPSTR, IP2STR(&ip.netmask));
-      ESP_LOGI(TAG, "GW:"IPSTR, IP2STR(&ip.gw));
-      ESP_LOGI(TAG, "~~~~~~~~~~~");
+	// Bind our server socket to a port.
+	serverAddress.sin_family = AF_INET;
+	serverAddress.sin_addr.s_addr = htonl(INADDR_ANY);
+	serverAddress.sin_port = htons(PORT_NUMBER);
+	int rc  = bind(sock, (struct sockaddr *)&serverAddress, sizeof(serverAddress));
+	if (rc < 0) {
+		ESP_LOGE(TAG, "bind: %d %s", rc, strerror(errno));
+		goto END;
+	}
+  /*
+	// Flag the socket as listening for new connections.
+	rc = listen(sock, 5);
+	if (rc < 0) {
+		ESP_LOGE(TAG, "listen: %d %s", rc, strerror(errno));
+		goto END;
+	}*/
+
+	while (1) {
+		char *buffer = malloc(1032);
+
+    struct sockaddr_storage src_addr;
+    socklen_t src_addr_len = sizeof(src_addr);
+    ssize_t count = recvfrom(sock,buffer,sizeof(buffer),0,(struct sockaddr*)&src_addr,&src_addr_len);
+    if (count == -1) {
+      ESP_LOGE(TAG, "recvfrom: %s",strerror(errno));
+      goto END;
     }
-  }
+
+		// http://stackoverflow.com/a/8170756
+		ESP_LOGD(TAG, "Data read (size: %d) was: %.*s", count, count, buffer);
+		free(buffer);
+	}
+	END:
+	vTaskDelete(NULL);
 }
 
 void app_main()
 {
   ESP_ERROR_CHECK( nvs_flash_init() );
   initialise_wifi();
-  xTaskCreate(&wpa2_enterprise_example_task, "wpa2_enterprise_example_task", 4096, NULL, 5, NULL);
+  xTaskCreate(&listen_udp, "listen_udp", 4096, NULL, 5, NULL);
 }
