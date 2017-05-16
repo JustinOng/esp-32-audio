@@ -12,6 +12,7 @@
 #include "tcpip_adapter.h"
 #include "timer.h"
 #include <lwip/sockets.h>
+#include "driver/i2s.h"
 
 // for audio isr
 #define TIMER_DIVIDER 1
@@ -21,6 +22,10 @@
 #define AUDIO_ISR_INTERVAL 1814
 
 #define PORT_NUMBER 8001
+
+#define RX_BUFFER_SIZE 1032
+
+#define I2S_NUM 0
 
 EventGroupHandle_t wifi_event_group;
 
@@ -87,46 +92,31 @@ static void initialise_wifi(void)
   ESP_ERROR_CHECK(tcpip_adapter_dhcps_start(TCPIP_ADAPTER_IF_AP));
 }
 
-void IRAM_ATTR timerIsr(void *para)
-{
-  static int i=0;
-  ESP_LOGI(TAG, "ISR %d", i++);
+static void initialise_i2s() {
+  static const i2s_config_t i2s_config = {
+     .mode = I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_DAC_BUILT_IN,
+     .sample_rate = 44100,
+     .bits_per_sample = 16, /* the DAC module will only take the 8bits from MSB */
+     .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+     .communication_format = I2S_COMM_FORMAT_I2S_MSB,
+     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1, // high interrupt priority
+     .dma_buf_count = 8,
+     .dma_buf_len = 64
+  };
 
-  // clear alarm?
-  TIMERG0.int_clr_timers.t1 = 1;
-  TIMERG0.hw_timer[TRK_TIMER_IDX].config.alarm_en = 1;
-}
-
-static void initialise_audio_isr(void) {
-  // https://www.esp32.com/viewtopic.php?t=1094
-  timer_config_t config;
-  config.alarm_en = 1;
-  config.auto_reload = 1;
-  config.counter_dir = TIMER_COUNT_UP;
-  config.divider = TIMER_DIVIDER;
-  config.intr_type = TIMER_INTR_LEVEL;
-  config.counter_en = TIMER_PAUSE;
-
-  timer_init(TRK_TIMER_GROUP, TRK_TIMER_IDX, &config);
-  timer_set_counter_value(TRK_TIMER_GROUP, TRK_TIMER_IDX, 0x00000000ULL);
-  timer_enable_intr(TRK_TIMER_GROUP, TRK_TIMER_IDX);
-  timer_isr_register(TRK_TIMER_GROUP, TRK_TIMER_IDX, timerIsr, NULL, ESP_INTR_FLAG_IRAM, NULL);
-
-  timer_pause(TRK_TIMER_GROUP, TRK_TIMER_IDX);
-  timer_set_counter_value(TRK_TIMER_GROUP, TRK_TIMER_IDX, 0x00000000ULL);
-  timer_set_alarm_value(TRK_TIMER_GROUP, TRK_TIMER_IDX, AUDIO_ISR_INTERVAL);
-  timer_start(TRK_TIMER_GROUP, TRK_TIMER_IDX);
+  i2s_driver_install(I2S_NUM, &i2s_config, 0, NULL);
+  i2s_set_pin(I2S_NUM, NULL);
+  i2s_set_sample_rates(I2S_NUM, 44100); //set sample rates
 }
 
 static void listen_audio_data(void *pvParameters)
 {
-  struct sockaddr_in clientAddress;
 	struct sockaddr_in serverAddress;
 
 	// Create a socket that we will listen upon.
-	int sock = socket(AF_INET, SOCK_DGRAM , 0);
-	if (sock < 0) {
-		ESP_LOGE(TAG, "socket: %d %s", sock, strerror(errno));
+	int rx_sock = socket(AF_INET, SOCK_DGRAM , 0);
+	if (rx_sock < 0) {
+		ESP_LOGE(TAG, "rx socket: %d %s", rx_sock, strerror(errno));
 		goto END;
 	}
 
@@ -135,7 +125,7 @@ static void listen_audio_data(void *pvParameters)
 	serverAddress.sin_family = AF_INET;
 	serverAddress.sin_addr.s_addr = htonl(INADDR_ANY);
 	serverAddress.sin_port = htons(PORT_NUMBER);
-	int rc  = bind(sock, (struct sockaddr *)&serverAddress, sizeof(serverAddress));
+	int rc  = bind(rx_sock, (struct sockaddr *)&serverAddress, sizeof(serverAddress));
 	if (rc < 0) {
 		ESP_LOGE(TAG, "bind: %d %s", rc, strerror(errno));
 		goto END;
@@ -148,21 +138,44 @@ static void listen_audio_data(void *pvParameters)
 		goto END;
 	}*/
 
+  int tx_sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (tx_sock < 0) {
+		ESP_LOGE(TAG, "tx socket: %d %s", tx_sock, strerror(errno));
+		goto END;
+	}
+
+  uint32_t last_packet_index = 0;
+
 	while (1) {
-		char *buffer = malloc(1032);
+		char *buffer = malloc(RX_BUFFER_SIZE);
+    uint32_t packet_index = 0;
 
     struct sockaddr_storage src_addr;
     socklen_t src_addr_len = sizeof(src_addr);
-    ESP_LOGI(TAG, "Waiting...");
-    ssize_t count = recvfrom(sock,buffer,sizeof(buffer),0,(struct sockaddr*)&src_addr,&src_addr_len);
-    ESP_LOGI(TAG, "Ping!");
+
+    ssize_t count = recvfrom(rx_sock,buffer,RX_BUFFER_SIZE,0,(struct sockaddr*)&src_addr,&src_addr_len);
     if (count == -1) {
-      ESP_LOGE(TAG, "recvfrom: %s",strerror(errno));
+      ESP_LOGE(TAG, "recvfrom: %s",strerror(errno))
       goto END;
     }
-
 		// http://stackoverflow.com/a/8170756
-		ESP_LOGD(TAG, "Data read (size: %d) was: %.*s", count, count, buffer);
+		ESP_LOGI(TAG, "Data read (size: %d)", count);/*
+    for(uint8_t i = 0; i < 255; i++) {
+      ESP_LOGI(TAG, "Byte %d: %02x", i, buffer[i]);
+    }*/
+
+    for(uint8_t i = 0; i < 4; i++) {
+      packet_index |= buffer[i] << (8 * i);
+    }
+
+    if (packet_index > last_packet_index) {
+      // skip first 4 bytes because they represent the sequence number of the packet
+      i2s_write_bytes(I2S_NUM, buffer+(4*sizeof(buffer)), count-4, portMAX_DELAY);
+
+      last_packet_index = packet_index;
+    }
+
+    sendto(rx_sock, &last_packet_index, 4, 0, (struct sockaddr *)&src_addr, src_addr_len);
 		free(buffer);
 	}
 	END:
@@ -173,5 +186,6 @@ void app_main()
 {
   ESP_ERROR_CHECK( nvs_flash_init() );
   initialise_wifi();
+  initialise_i2s();
   xTaskCreate(&listen_audio_data, "listen_audio_data", 4096, NULL, 5, NULL);
 }

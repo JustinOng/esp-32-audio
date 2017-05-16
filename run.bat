@@ -1,1 +1,1 @@
-python send.py SDTEST1.wav 192.168.1.1 8001
+python send.py tone.wav 192.168.1.1 8001

@@ -61,11 +61,12 @@ with open(sys.argv[1], "rb") as f:
       print "Data size: {0}".format(chunk_size)
                 
       s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+      s.settimeout(0.5)
       
       remaining_data = chunk_size
       
       # for debugging
-      remaining_data = 2000
+      #remaining_data = 2000
       sequence_number = 1
       while remaining_data > 0:
         size_to_read = DATA_CHUNK_SIZE
@@ -82,11 +83,22 @@ with open(sys.argv[1], "rb") as f:
         
         #print binascii.hexlify(data)
         
-        print "Sending packet {0}".format(sequence_number)
-        
-        r = s.sendto(data, (target_ip, target_port))
-        
-        print r
+        while True:
+          print "Sending packet {0}".format(sequence_number)
+          
+          r = s.sendto(data, (target_ip, target_port))
+          
+          print "Sent {0} bytes".format(r)
+          
+          print "Waiting for response..."
+          
+          try:
+            response, address = s.recvfrom(4);
+          except socket.timeout:
+            continue
+          
+          print "Reply: {0}".format(binascii.hexlify(response))
+          break
                 
         sequence_number += 1
         remaining_data -= size_to_read
